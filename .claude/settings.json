@@ -7,7 +7,27 @@
       "Bash(bin/lean-sandbox status)",
       "Bash(bin/lean-sandbox stop)",
       "Bash(git diff:*)",
-      "Bash(git status)"
+      "Bash(git status)",
+      "mcp__workstations__list_workstation_types",
+      "mcp__workstations__create_workstation",
+      "mcp__workstations__get_workstation",
+      "mcp__workstations__list_workstations",
+      "mcp__workstations__destroy_workstation",
+      "mcp__workstations__create_agent",
+      "mcp__workstations__get_agent",
+      "mcp__workstations__list_agents",
+      "mcp__workstations__read_inbox",
+      "mcp__workstations__send_message",
+      "mcp__workstations__cancel_agent",
+      "mcp__workstations__list_repos",
+      "Bash(git switch:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(git fetch:*)",
+      "Bash(git checkout FETCH_HEAD -- :*)",
+      "Bash(git log:*)",
+      "Bash(git remote get-url origin)"
     ]
   }
 }

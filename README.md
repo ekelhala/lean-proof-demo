@@ -24,6 +24,7 @@ checks go to the sandbox. The sandbox has no network.
 | 1 | `Problems/OddSum.lean` | 1 + 3 + ⋯ + (2n − 1) = n² | Induction and `ring` |
 | 2 | `Problems/Sqrt2.lean` | p² ≠ 2q² for q ≠ 0 | A bridge to `irrational_sqrt_two` through ℝ, or descent |
 | 3 | `Problems/Imo1959P1.lean` | gcd(21n + 4, 14n + 3) = 1 (IMO 1959, Problem 1) | 3(14n + 3) − 2(21n + 4) = 1, and divisibility |
+| 4 | `Problems/ThirtyDvd.lean` | 30 ∣ n⁵ − n for every integer n | Three independent parts (2, 3 and 5 divide it), then coprimality. The problem for `/delegate` |
 
 Each file states its theorem with `sorry`. The line `-- expect: NAME` names the theorem that the
 check must find.
@@ -62,6 +63,28 @@ claude -p "/prove Problems/OddSum.lean" --permission-mode acceptEdits \
 ```
 
 To start again: `git checkout Problems/` and `bin/lean-sandbox stop`.
+
+## Delegate to Workstations agents
+
+`/delegate` lets Claude Code plan a proof and hand its parts to agents that run in an
+Agentformers Workstations workstation:
+
+```text
+/delegate Problems/ThirtyDvd.lean
+```
+
+1. Claude Code splits the proof into lemmas, writes each in its own file under `Lemmas/` with
+   `sorry`, checks the skeleton, and pushes it to a branch `delegate/…`.
+2. It creates one workstation of the type `lean`, which is one sandbox of the pool `lean`, and
+   starts one agent for each lemma (at most three) on that branch.
+3. Each agent proves its lemma with `lean-check` in the workstation. Workstations pushes its work
+   to `ws/<agent-id>`.
+4. Claude Code fetches each branch and runs `verify` on every lemma: it trusts no agent's own
+   check. Then it assembles the proof, verifies it, and destroys the workstation.
+
+It needs the MCP server `workstations` in Claude Code (`claude mcp add --transport http --scope
+user workstations <url> --header "Authorization: Bearer <key>"`, with a key from the Workstations
+**Access** page). The Workstations GitHub App must have access to this repository.
 
 ## `bin/lean-sandbox`
 
