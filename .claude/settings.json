@@ -25,7 +25,7 @@
       "Bash(git commit:*)",
       "Bash(git push:*)",
       "Bash(git fetch:*)",
-      "Bash(git checkout FETCH_HEAD -- :*)",
+      "Bash(git checkout FETCH_HEAD:*)",
       "Bash(git log:*)",
       "Bash(git remote get-url origin)"
     ]

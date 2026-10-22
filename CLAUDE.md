@@ -44,6 +44,8 @@ repository.
   branches never conflict.
 - Each agent's work arrives on the branch `ws/<agent-id>`. Workstations trusts the agent's own
   `lean-check`. Run `bin/lean-sandbox verify` on every lemma before you use it.
+- The pool `lean` has three places: the workstation, your `check` sandbox and a `verify` sandbox
+  fill it. Stop your `check` sandbox before you create the workstation.
 - Destroy the workstation when the work is done, also after a failure.
 
 ## Inside a workstation
