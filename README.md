@@ -52,6 +52,14 @@ In Claude Code:
 Claude Code says how it plans to prove the theorem, writes a proof, and checks it. It reads each
 error and tries again until the check passes. Then it runs `verify`. `.claude/settings.json`
 allows the `bin/lean-sandbox` commands, so the loop does not stop for a permission prompt.
+Claude Code reads that file only in a trusted folder: accept the trust dialog at the first start.
+A headless run (`claude -p`) in a new clone has no dialog, so name the commands yourself:
+
+```sh
+claude -p "/prove Problems/OddSum.lean" --permission-mode acceptEdits \
+  --allowedTools "Bash(bin/lean-sandbox check:*)" "Bash(bin/lean-sandbox verify:*)" \
+  "Bash(bin/lean-sandbox exec:*)" "Bash(bin/lean-sandbox stop)"
+```
 
 To start again: `git checkout Problems/` and `bin/lean-sandbox stop`.
 
