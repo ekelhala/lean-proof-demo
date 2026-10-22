@@ -1,0 +1,13 @@
+name = "lean_proof_demo"
+defaultTargets = ["Problems"]
+
+# The same Mathlib as the sandbox image env-lean (Engine-of-Agent-Next environments/lean).
+# lake-manifest.json is the image's, so a local build uses the same commit of every package.
+[[require]]
+name = "mathlib"
+git = "https://github.com/leanprover-community/mathlib4"
+rev = "v4.35.0"
+
+[[lean_lib]]
+name = "Problems"
+globs = ["Problems.+"]

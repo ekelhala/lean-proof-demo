@@ -1,0 +1,287 @@
+#!/usr/bin/env python3
+"""Check Lean files in an Agentformers sandbox of the pool `lean`.
+
+The pool's image holds Lean 4, a prebuilt Mathlib and `lean-check`. This command keeps one
+sandbox for the working tree, so the Lean server stays warm between checks. Nothing about Lean
+runs on this machine.
+
+    bin/lean-sandbox check Problems/OddSum.lean    # upload the file, run lean-check
+    bin/lean-sandbox verify Problems/OddSum.lean   # a fresh sandbox: proof ok, statement unchanged
+    bin/lean-sandbox exec 'lean --version'         # any command in the sandbox, in /work/proj
+    bin/lean-sandbox status | stop
+
+Configuration comes from the environment:
+
+    AGENTFORMERS_API_KEY        the API key (or AGENTFORMERS_API_KEY_FILE, a file that holds it)
+    AGENTFORMERS_API_URL        default https://engine.next.agentformers.fi
+    LEAN_SANDBOX_POOL           default lean
+
+The exit code is 0 when every file passes, 1 when a file fails, and 2 for an error of the call.
+"""
+
+from __future__ import annotations
+
+import io
+import json
+import os
+import re
+import subprocess
+import sys
+import tarfile
+import urllib.error
+import urllib.request
+from pathlib import Path
+from typing import Any
+
+ROOT = Path(__file__).resolve().parent.parent
+STATE = ROOT / ".lean-sandbox" / "state.json"
+WORKDIR = "/work/proj"
+EXPECT = re.compile(r"^-- expect: (\S+)\s*$", re.MULTILINE)
+IDLE_TTL_S = 1800  # the sandbox ends after 30 minutes without a call
+EXEC_TIMEOUT_S = 330  # the pool's longest exec
+CHECK_TIMEOUT_S = 300  # lean-check's own limit, below the exec's
+
+
+class CallError(Exception):
+    """A fault of the call or of the platform, not of a Lean file: exit 2."""
+
+
+# ---- the API ---------------------------------------------------------------------------------
+
+
+def api_key() -> str:
+    if key := os.environ.get("AGENTFORMERS_API_KEY"):
+        return key.strip()
+    if path := os.environ.get("AGENTFORMERS_API_KEY_FILE"):
+        return Path(path).expanduser().read_text().strip()
+    raise CallError("set AGENTFORMERS_API_KEY or AGENTFORMERS_API_KEY_FILE")
+
+
+def request(method: str, path: str, body: bytes | None = None, ctype: str = "application/json",
+            timeout: float = 60) -> Any:
+    base = os.environ.get("AGENTFORMERS_API_URL", "https://engine.next.agentformers.fi").rstrip("/")
+    req = urllib.request.Request(base + path, data=body, method=method)
+    req.add_header("Authorization", "Bearer " + api_key())
+    if body is not None:
+        req.add_header("Content-Type", ctype)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = resp.read()
+    except urllib.error.HTTPError as e:
+        raise CallError(describe(e)) from None
+    except urllib.error.URLError as e:
+        raise CallError(f"{method} {path}: {e.reason}") from None
+    return json.loads(data) if data else None
+
+
+def describe(e: urllib.error.HTTPError) -> str:
+    try:
+        err = json.loads(e.read())["error"]
+    except (ValueError, KeyError, TypeError):
+        return f"HTTP {e.code}"
+    reason = (err.get("details") or {}).get("reason")
+    return f"HTTP {e.code} {err.get('code')}: {err.get('message')}" + (f" ({reason})" if reason else "")
+
+
+def run(sandbox: str, command: str, timeout: int = EXEC_TIMEOUT_S) -> dict[str, Any]:
+    body = json.dumps({"command": command, "cwd": WORKDIR, "timeout_s": timeout}).encode()
+    result: dict[str, Any] = request("POST", f"/v1/sandboxes/{sandbox}/exec", body, timeout=timeout + 30)
+    if result.get("timed_out"):
+        raise CallError(f"the command ran out of its {timeout} s")
+    return result
+
+
+def upload(sandbox: str, files: dict[str, str], under: str = WORKDIR) -> None:
+    """files maps a path relative to the repository to the text to write there."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        for name, text in files.items():
+            data = text.encode()
+            info = tarfile.TarInfo(name)
+            info.size, info.mode = len(data), 0o644
+            tar.addfile(info, io.BytesIO(data))
+    request("POST", f"/v1/sandboxes/{sandbox}/files?path={under}", buf.getvalue(), "application/gzip")
+
+
+def create() -> str:
+    pool = os.environ.get("LEAN_SANDBOX_POOL", "lean")
+    body = {"pool": pool, "idle_ttl_s": IDLE_TTL_S, "metadata": {"purpose": "lean-proof-demo"}}
+    box: dict[str, Any] = request("POST", "/v1/sandboxes", json.dumps(body).encode())
+    print(f"lean-sandbox: new sandbox {box['id']} on pool {pool}; the first check loads Mathlib",
+          file=sys.stderr)
+    return str(box["id"])
+
+
+def destroy(sandbox: str) -> None:
+    try:
+        request("DELETE", f"/v1/sandboxes/{sandbox}")
+    except CallError as e:
+        if "HTTP 404" not in str(e):
+            raise
+
+
+# ---- the kept sandbox ------------------------------------------------------------------------
+
+
+def kept() -> str | None:
+    """The id of this working tree's sandbox while it runs."""
+    try:
+        sandbox = json.loads(STATE.read_text())["id"]
+    except (OSError, ValueError, KeyError):
+        return None
+    try:
+        box = request("GET", f"/v1/sandboxes/{sandbox}")
+    except CallError as e:
+        if "HTTP 404" in str(e):
+            return None
+        raise
+    return str(sandbox) if box.get("status") == "running" else None
+
+
+def ensure() -> str:
+    if sandbox := kept():
+        return sandbox
+    sandbox = create()
+    STATE.parent.mkdir(exist_ok=True)
+    STATE.write_text(json.dumps({"id": sandbox}) + "\n")
+    return sandbox
+
+
+# ---- the commands ----------------------------------------------------------------------------
+
+
+def lean_files(args: list[str]) -> dict[str, str]:
+    if not args:
+        raise CallError("name at least one .lean file")
+    files = {}
+    for arg in args:
+        path = Path(arg).resolve()
+        if path.suffix != ".lean" or not path.is_relative_to(ROOT):
+            raise CallError(f"{arg}: not a .lean file of this repository")
+        files[path.relative_to(ROOT).as_posix()] = path.read_text(encoding="utf-8")
+    return files
+
+
+def quoted(names: Any) -> str:
+    return " ".join("'" + n.replace("'", "'\\''") + "'" for n in names)
+
+
+def cmd_check(args: list[str]) -> int:
+    files = lean_files(args)
+    sandbox = ensure()
+    upload(sandbox, files)
+    # lean-check applies each --expect to every file, so each file gets its own call. The
+    # exit code is the largest: 2 for an error of the call, else 1 when a file failed.
+    calls = [
+        f"lean-check --timeout {CHECK_TIMEOUT_S}"
+        + "".join(f" --expect {n}" for n in EXPECT.findall(text))
+        + f" {quoted([name])}; r=$?; [ $r -gt $rc ] && rc=$r"
+        for name, text in files.items()
+    ]
+    r = run(sandbox, "rc=0; " + "; ".join(calls) + "; exit $rc")
+    sys.stdout.write(r["stdout"])
+    sys.stderr.write(r["stderr"])
+    return int(r["exit_code"])
+
+
+def committed(name: str) -> str:
+    try:
+        return subprocess.run(["git", "show", f"HEAD:{name}"], cwd=ROOT, check=True,
+                              capture_output=True, text=True).stdout
+    except subprocess.CalledProcessError:
+        raise CallError(f"{name}: not in the last commit, so its statement is unknown") from None
+
+
+def cmd_verify(args: list[str]) -> int:
+    """Check each file in a new sandbox, and compare each expected theorem's type with the
+    committed version of the file. A proof passes only for the statement that was asked."""
+    files = lean_files(args)
+    originals = {name: committed(name) for name in files}
+    sandbox = create()
+    try:
+        upload(sandbox, files)
+        upload(sandbox, originals, under=WORKDIR + "/.committed")
+        ok = True
+        for name, text in files.items():
+            want = EXPECT.findall(originals[name])
+            if not want:
+                raise CallError(f"{name}: the committed file has no '-- expect: NAME' line")
+            stated = check_json(sandbox, f".committed/{name}", want, "--allow-sorry")
+            proved = check_json(sandbox, name, want)
+            changed = [n for n in want if declared(stated, n) != declared(proved, n)]
+            passed = proved["ok"] and not changed and EXPECT.findall(text) == want
+            ok = ok and passed
+            print(f"{name}: {'VERIFIED' if passed else 'NOT VERIFIED'} "
+                  f"({proved.get('mode')}, {proved.get('seconds')} s)")
+            for m in proved.get("messages") or []:
+                if m["severity"] == "error":
+                    where = f"line {m['line']}" if m.get("line") else "file"
+                    print(f"  error ({where}): {m['text'][:300]}")
+            for axiom, users in (proved.get("axioms") or {}).items():
+                print(f"  axiom {axiom}: {', '.join(users)}")
+            for n in changed:
+                print(f"  the statement of {n} differs from the committed one")
+            if EXPECT.findall(text) != want:
+                print("  the '-- expect:' lines differ from the committed ones")
+        return 0 if ok else 1
+    finally:
+        destroy(sandbox)
+
+
+def check_json(sandbox: str, name: str, want: list[str], *extra: str) -> dict[str, Any]:
+    flags = " ".join(extra) + "".join(f" --expect {n}" for n in want)
+    r = run(sandbox, f"lean-check --json --timeout {CHECK_TIMEOUT_S} {flags} {quoted([name])}")
+    try:
+        result: dict[str, Any] = json.loads(r["stdout"])["files"][0]
+    except (ValueError, KeyError, IndexError):
+        raise CallError(f"lean-check gave no result for {name}: {r['stderr'][-500:]}") from None
+    return result
+
+
+def declared(result: dict[str, Any], name: str) -> str | None:
+    for d in result.get("declarations") or []:
+        if d["name"] == name:
+            return str(d["type"])
+    return None
+
+
+def cmd_exec(args: list[str]) -> int:
+    if not args:
+        raise CallError("name a command")
+    r = run(ensure(), " ".join(args))
+    sys.stdout.write(r["stdout"])
+    sys.stderr.write(r["stderr"])
+    return int(r["exit_code"])
+
+
+def cmd_status(_: list[str]) -> int:
+    sandbox = kept()
+    print(f"sandbox {sandbox} is running" if sandbox else "no sandbox")
+    return 0
+
+
+def cmd_stop(_: list[str]) -> int:
+    if sandbox := kept():
+        destroy(sandbox)
+        print(f"sandbox {sandbox} destroyed")
+    STATE.unlink(missing_ok=True)
+    return 0
+
+
+COMMANDS = {"check": cmd_check, "verify": cmd_verify, "exec": cmd_exec, "status": cmd_status,
+            "stop": cmd_stop}
+
+
+def main() -> int:
+    if len(sys.argv) < 2 or sys.argv[1] not in COMMANDS:
+        print(__doc__.strip(), file=sys.stderr)
+        return 2
+    try:
+        return COMMANDS[sys.argv[1]](sys.argv[2:])
+    except CallError as e:
+        print(f"lean-sandbox: {e}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

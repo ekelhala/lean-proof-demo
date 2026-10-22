@@ -1,0 +1,93 @@
+# lean-proof-demo
+
+Claude Code proves theorems in Lean 4 with Mathlib. Lean runs in an Agentformers sandbox. Your machine
+needs no Lean, no Mathlib and no 11 GB of build files.
+
+```text
+ your machine                               Agentformers
+ ┌──────────────────────────────┐   HTTPS   ┌──────────────────────────────────────────┐
+ │ Claude Code                  │ ────────▶ │ engine  /v1/sandboxes                     │
+ │   edits Problems/*.lean      │           │   pool `lean` on a ComputeLink node       │
+ │   runs bin/lean-sandbox      │ ◀──────── │   image env-lean: Lean 4.35.0, Mathlib,   │
+ │     check / verify           │  result   │   lean-check (kernel replay, axiom check) │
+ └──────────────────────────────┘           └──────────────────────────────────────────┘
+```
+
+The idea comes from [kontti](https://github.com/l-oksanen/kontti), which runs Claude Code and Lean
+in an Apptainer container on a shared host. Here Claude Code stays on your machine, and only the
+checks go to the sandbox. The sandbox has no network.
+
+## The problems
+
+| Level | File | Theorem | What a proof needs |
+|---|---|---|---|
+| 1 | `Problems/OddSum.lean` | 1 + 3 + ⋯ + (2n − 1) = n² | Induction and `ring` |
+| 2 | `Problems/Sqrt2.lean` | p² ≠ 2q² for q ≠ 0 | A bridge to `irrational_sqrt_two` through ℝ, or descent |
+| 3 | `Problems/Imo1959P1.lean` | gcd(21n + 4, 14n + 3) = 1 (IMO 1959, Problem 1) | 3(14n + 3) − 2(21n + 4) = 1, and divisibility |
+
+Each file states its theorem with `sorry`. The line `-- expect: NAME` names the theorem that the
+check must find.
+
+## What you need
+
+- Claude Code, Python 3.10 or later, and git.
+- An Agentformers API key with `sandboxes:read` and `sandboxes:write`, in a tenant that can use
+  the pool `lean`. Create one in the console under **API keys**.
+
+## Run the demo
+
+```sh
+git clone https://github.com/AgentFormers/lean-proof-demo && cd lean-proof-demo
+export AGENTFORMERS_API_KEY_FILE=~/.config/agentformers/key   # a file that holds the key
+bin/lean-sandbox check Problems/OddSum.lean                   # the goal at the sorry
+claude
+```
+
+In Claude Code:
+
+```text
+/prove Problems/Imo1959P1.lean
+```
+
+Claude Code says how it plans to prove the theorem, writes a proof, and checks it. It reads each
+error and tries again until the check passes. Then it runs `verify`. `.claude/settings.json`
+allows the `bin/lean-sandbox` commands, so the loop does not stop for a permission prompt.
+
+To start again: `git checkout Problems/` and `bin/lean-sandbox stop`.
+
+## `bin/lean-sandbox`
+
+| Command | What it does |
+|---|---|
+| `check FILE…` | Uploads the files to `/work/proj` of this working tree's sandbox, and runs `lean-check` on each. It creates the sandbox at the first call and keeps it for 30 minutes after the last call, so the Lean server stays warm |
+| `verify FILE…` | Creates a new sandbox. It checks each file, and compares each theorem's type with the version of the last commit. It prints `VERIFIED` only for a proof of the committed statement. It destroys the sandbox at the end |
+| `exec 'CMD'` | Runs a command in the sandbox, in `/work/proj` |
+| `status`, `stop` | Shows the kept sandbox, or destroys it |
+
+The exit code is `0` when every file passes, `1` when a file fails and `2` for an error of the
+call. `AGENTFORMERS_API_URL` (default `https://engine.next.agentformers.fi`) and
+`LEAN_SANDBOX_POOL` (default `lean`) change the target.
+
+Times on the pool `lean` (bwrap, 3500 MiB, 1 CPU): the first check of a sandbox loads Mathlib
+in 14 to 30 s. Later checks take 0.3 to 1 s. `exact?` takes 35 to 70 s. A `verify` takes about
+15 s, because its new sandbox loads Mathlib again.
+
+## What a pass means
+
+`lean-check` passes a file when Lean elaborates it with no error, the kernel accepts every new
+declaration again, and the declarations use no axiom but `propext`, `Classical.choice` and
+`Quot.sound`. `verify` adds the check that the statement is the committed one.
+
+This is a check for an honest prover. The file's own meta-code runs in the sandbox that checks
+it, so a hostile file can defeat the check. `CLAUDE.md` forbids such code. A verdict that a third
+party must trust needs a re-check of the bare file by a program that the file cannot touch.
+
+## Build locally (optional)
+
+The project pins the same Lean and Mathlib as the sandbox image, with the image's
+`lake-manifest.json`. With [elan](https://github.com/leanprover/elan) installed:
+
+```sh
+lake exe cache get   # Mathlib's prebuilt .olean files, about 5 GB
+lake build
+```
