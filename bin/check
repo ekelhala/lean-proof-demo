@@ -1,0 +1,166 @@
+#!/usr/bin/env python3
+"""Check Lean files of this repository with the local Lean and Mathlib.
+
+    bin/check Problems/OddSum.lean            # Lean errors, sorry and axioms of each file
+    bin/check --verify Problems/OddSum.lean   # also: the statement is the committed one
+
+A file passes when Lean reports no error, it declares each name of its `-- expect: NAME` lines,
+and those declarations use no axiom but propext, Classical.choice and Quot.sound. A `sorry`
+shows as the axiom sorryAx. `--verify` also compares each expected declaration's type with the
+version of the file in the last commit, so a proof passes only for the statement that was asked.
+
+The check runs Lean on a copy of the file with `#print axioms` and `#check` appended. The file's
+own commands run in the same Lean process, so this is a check for an honest prover.
+
+It needs `lake` (elan) and Mathlib's prebuilt files: run `lake exe cache get` once. The exit code
+is 0 when every file passes, 1 when a file fails, and 2 for an error of the call.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from typing import Any
+
+ROOT = Path(__file__).resolve().parent.parent
+WORK = ROOT / ".lake" / "checks"
+EXPECT = re.compile(r"^-- expect: (\S+)\s*$", re.MULTILINE)
+STANDARD_AXIOMS = {"propext", "Classical.choice", "Quot.sound"}
+TIMEOUT_S = 600
+MARK = "-- bin/check: the lines below were added by the check"
+
+
+class CallError(Exception):
+    """A fault of the call, not of a Lean file: exit 2."""
+
+
+def lake() -> str:
+    found = shutil.which("lake") or str(Path.home() / ".elan" / "bin" / "lake")
+    if not Path(found).exists():
+        raise CallError("lake is not installed: install elan, then run `lake exe cache get`")
+    return found
+
+
+def run_lean(text: str, names: list[str], label: str) -> dict[str, Any]:
+    """Run Lean on text with the check's lines appended. Returns the messages of the file, each
+    expected name's axioms (None when Lean did not print them) and its type."""
+    body = text.rstrip("\n") + "\n"
+    first_added = body.count("\n") + 1
+    added = [MARK]
+    for n in names:
+        added += [f"#print axioms {n}", f"#check @{n}"]
+    WORK.mkdir(parents=True, exist_ok=True)
+    path = WORK / (re.sub(r"[^A-Za-z0-9]+", "_", label) + ".lean")
+    path.write_text(body + "\n".join(added) + "\n", encoding="utf-8")
+    try:
+        proc = subprocess.run([lake(), "env", "lean", "--json", str(path)], cwd=ROOT,
+                              capture_output=True, text=True, timeout=TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        raise CallError(f"{label}: Lean ran out of {TIMEOUT_S} s") from None
+    messages, extra = [], []
+    for line in proc.stdout.splitlines():
+        try:
+            m = json.loads(line)
+        except ValueError:
+            continue
+        (extra if m.get("pos", {}).get("line", 0) > first_added else messages).append(m)
+    if not messages and not extra and proc.returncode != 0:
+        raise CallError(f"{label}: Lean failed: {proc.stderr.strip()[-500:]}")
+    axioms: dict[str, set[str] | None] = {n: None for n in names}
+    types: dict[str, str | None] = {n: None for n in names}
+    for m in extra:
+        data = m.get("data", "")
+        if found := re.match(r"'(.+?)' depends on axioms: \[(.*)\]", data, re.DOTALL):
+            axioms[found[1]] = {a.strip() for a in found[2].split(",") if a.strip()}
+        elif found := re.match(r"'(.+?)' does not depend on any axioms", data):
+            axioms[found[1]] = set()
+        else:
+            for n in names:
+                if data.startswith(n + " :") or data.startswith("@" + n + " :"):
+                    types[n] = " ".join(data.split(":", 1)[1].split())
+    return {"messages": messages, "extra": extra, "axioms": axioms, "types": types}
+
+
+def report(name: str, r: dict[str, Any], names: list[str]) -> list[str]:
+    """The reasons that the file fails, and print its messages."""
+    reasons = []
+    for m in r["messages"]:
+        pos = m.get("pos") or {}
+        sev = m.get("severity", "information")
+        print(f"{name}:{pos.get('line')}:{pos.get('column')}: {sev}: {m.get('data', '').rstrip()}")
+        if sev == "error":
+            reasons.append(f"Lean error at line {pos.get('line')}")
+    for m in r["extra"]:
+        if m.get("severity") == "error" and not any(n in m.get("data", "") for n in names):
+            reasons.append("an error in the check's own lines")
+    if not names:
+        reasons.append("the file has no '-- expect: NAME' line")
+    for n in names:
+        used = r["axioms"][n]
+        if used is None:
+            reasons.append(f"the file declares no {n}")
+        elif "sorryAx" in used:
+            reasons.append(f"{n} uses sorry")
+        elif extra := used - STANDARD_AXIOMS:
+            reasons.append(f"{n} uses the axioms {', '.join(sorted(extra))}")
+    return reasons
+
+
+def committed(name: str) -> str:
+    try:
+        return subprocess.run(["git", "show", f"HEAD:{name}"], cwd=ROOT, check=True,
+                              capture_output=True, text=True).stdout
+    except subprocess.CalledProcessError:
+        raise CallError(f"{name}: not in the last commit, so its statement is unknown") from None
+
+
+def check_file(arg: str, verify: bool) -> bool:
+    path = Path(arg).resolve()
+    if path.suffix != ".lean" or not path.is_relative_to(ROOT) or not path.is_file():
+        raise CallError(f"{arg}: not a .lean file of this repository")
+    name = path.relative_to(ROOT).as_posix()
+    text = path.read_text(encoding="utf-8")
+    names = EXPECT.findall(text)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        mine = pool.submit(run_lean, text, names, name)
+        if verify:
+            base_text = committed(name)
+            base = pool.submit(run_lean, base_text, EXPECT.findall(base_text), "HEAD " + name)
+        r = mine.result()
+        reasons = report(name, r, names)
+        if verify:
+            b = base.result()
+            if EXPECT.findall(base_text) != names:
+                reasons.append("the '-- expect:' lines differ from the committed ones")
+            for n in names:
+                if r["types"][n] is None or r["types"][n] != b["types"].get(n):
+                    reasons.append(f"the statement of {n} differs from the committed one")
+    verdict = ("VERIFIED" if verify else "ok") if not reasons else ("NOT VERIFIED" if verify else "FAILED")
+    print(f"{name}: {verdict}" + "".join(f"\n  {x}" for x in reasons))
+    return not reasons
+
+
+def main() -> int:
+    args = sys.argv[1:]
+    verify = "--verify" in args
+    files = [a for a in args if a != "--verify"]
+    if not files or any(a.startswith("-") for a in files):
+        print(__doc__.strip(), file=sys.stderr)
+        return 2
+    os.environ.setdefault("LEAN_NUM_THREADS", str(os.cpu_count() or 1))
+    try:
+        results = [check_file(f, verify) for f in files]
+    except CallError as e:
+        print(f"bin/check: {e}", file=sys.stderr)
+        return 2
+    return 0 if all(results) else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
