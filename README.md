@@ -37,7 +37,7 @@ check must find.
 ## Run the demo
 
 ```sh
-git clone https://github.com/AgentFormers/lean-proof-demo && cd lean-proof-demo
+git clone https://github.com/ekelhala/lean-proof-demo && cd lean-proof-demo
 export AGENTFORMERS_API_KEY_FILE=~/.config/agentformers/key   # a file that holds the key
 bin/lean-sandbox check Problems/OddSum.lean                   # the goal at the sorry
 claude
