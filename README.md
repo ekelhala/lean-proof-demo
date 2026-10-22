@@ -24,7 +24,6 @@ checks go to the sandbox. The sandbox has no network.
 | 1 | `Problems/OddSum.lean` | 1 + 3 + ⋯ + (2n − 1) = n² | Induction and `ring` |
 | 2 | `Problems/Sqrt2.lean` | p² ≠ 2q² for q ≠ 0 | A bridge to `irrational_sqrt_two` through ℝ, or descent |
 | 3 | `Problems/Imo1959P1.lean` | gcd(21n + 4, 14n + 3) = 1 (IMO 1959, Problem 1) | 3(14n + 3) − 2(21n + 4) = 1, and divisibility |
-| 4 | `Problems/ThirtyDvd.lean` | 30 ∣ n⁵ − n for every integer n | Three independent parts (2, 3 and 5 divide it), then coprimality. The problem for `/delegate` |
 
 Each file states its theorem with `sorry`. The line `-- expect: NAME` names the theorem that the
 check must find.
@@ -64,27 +63,49 @@ claude -p "/prove Problems/OddSum.lean" --permission-mode acceptEdits \
 
 To start again: `git checkout Problems/` and `bin/lean-sandbox stop`.
 
-## Delegate to Workstations agents
+## Formalize a proof with Workstations agents
 
-`/delegate` lets Claude Code plan a proof and hand its parts to agents that run in an
-Agentformers Workstations workstation:
+The main demo. `Proofs/` holds proofs written in ordinary mathematics:
+
+| File | Theorem | Steps for agents |
+|---|---|---|
+| `Proofs/thirty-divides.md` | 30 ∣ n⁵ − n for every integer n | 2, 3 and 5 divide it |
+| `Proofs/nicomachus.md` | 1³ + ⋯ + n³ = (1 + ⋯ + n)² | the sum of the numbers, the sum of the cubes |
+
+Start Claude Code in the repository and point it at a proof:
 
 ```text
-/delegate Problems/ThirtyDvd.lean
+Formalize Proofs/thirty-divides.md
 ```
 
-1. Claude Code splits the proof into lemmas, writes each in its own file under `Lemmas/` with
-   `sorry`, checks the skeleton, and pushes it to a branch `delegate/…`.
-2. It creates one workstation of the type `lean`, which is one sandbox of the pool `lean`, and
-   starts one agent for each lemma (at most three) on that branch.
-3. Each agent proves its lemma with `lean-check` in the workstation. Workstations pushes its work
-   to `ws/<agent-id>`.
-4. Claude Code fetches each branch and runs `verify` on every lemma: it trusts no agent's own
-   check. Then it assembles the proof, verifies it, and destroys the workstation.
+(or `/formalize Proofs/thirty-divides.md`). Then watch:
 
-It needs the MCP server `workstations` in Claude Code (`claude mcp add --transport http --scope
-user workstations <url> --header "Authorization: Bearer <key>"`, with a key from the Workstations
-**Access** page). The Workstations GitHub App must have access to this repository.
+1. Claude Code writes the theorem in Lean, checks that it parses, and asks you to confirm that the
+   statement means what the text says. No check can decide that. Only a reader can.
+2. It commits the statement to a branch `formalize/…`. It writes one Lean lemma file for each
+   step of the proof, with `sorry`, and checks that the conclusion follows from the lemmas.
+3. It creates a workstation of the type `lean` in Agentformers Workstations. That is one
+   sandbox of the pool `lean`, and it starts one agent for each step, at most three. Each agent
+   gets its step's text and formalizes that argument with `lean-check`. Workstations pushes each
+   agent's work to `ws/<agent-id>`. Claude Code relays what the agents report as they work.
+4. Claude Code fetches every agent's branch and runs `verify` on each lemma itself. It trusts no
+   agent's own check. Then it assembles the proof, verifies the whole theorem, destroys the
+   workstation and shows each informal step next to its Lean lemma.
+
+A run of `thirty-divides` took about 5 minutes. The three agents took 45 to 54 s each.
+
+`/delegate Problems/<File>.lean` does steps 2 to 4 for a theorem that is already stated in Lean.
+
+It needs:
+
+- The MCP server `workstations` in Claude Code: `claude mcp add --transport http --scope user
+  workstations <url> --header "Authorization: Bearer <key>"`, with a key from the Workstations
+  **Access** page.
+- The Workstations GitHub App, with access to this repository. The agents clone it and push to
+  it.
+- A trusted folder, so `.claude/settings.json` lets the run go on without permission prompts.
+
+To reset after a demo, delete the run's branches: `formalize/…` and the agents' `ws/agent_…`.
 
 ## `bin/lean-sandbox`
 

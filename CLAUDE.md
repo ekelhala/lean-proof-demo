@@ -32,6 +32,27 @@ whose image holds Lean 4.35.0, a prebuilt Mathlib and `lean-check`.
    only when it prints `VERIFIED`.
 5. Report the final proof and the `verify` output. Then run `bin/lean-sandbox stop`.
 
+## Formalize an informal proof
+
+`Proofs/` holds proofs in ordinary mathematics. When the user asks you to formalize one, or runs
+`/formalize Proofs/<file>.md`:
+
+1. **State.** Read the proof. Write the theorem in Lean in a new file `Problems/<Name>.lean`:
+   the header `import Mathlib`, a doc comment that quotes the theorem, `-- expect: <name>`, and
+   the statement with `:= by sorry`. Choose types that match the text: ℤ for "every integer", ℕ
+   for "every natural number". Check it with `bin/lean-sandbox check`: the only error must be
+   the one about `sorryAx`.
+2. **Confirm.** Show the user the Lean statement, and say in one sentence how it matches the
+   text. Ask the user to confirm it before you go on, unless the user said to go on without
+   asking. No check can tell whether a statement means what the text means. Only a reader can.
+3. **Branch.** `git switch -c formalize/<name>-<yyyymmdd-hhmm>`, and commit the statement alone.
+   `verify` compares every later version with the committed statement.
+4. **Delegate.** Follow `.claude/commands/delegate.md` from step 2, on this branch. The lemmas
+   are the steps of the informal proof, at most three, and the conclusion stays with you. Quote
+   each step's text in its agent's task, so the agent formalizes that argument.
+5. **Report.** Put the informal step and its Lean lemma side by side, then the final `verify`
+   output.
+
 ## Delegating to Workstations
 
 `/delegate Problems/<File>.lean` plans a proof here and gives its lemmas to agents in a

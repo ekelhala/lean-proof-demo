@@ -16,8 +16,9 @@ each step, in one or two sentences, because this is a live demo.
    `sorry`), and prove the theorem from them. Run `bin/lean-sandbox check` on all the files. Go
    on only when the only errors are the ones about `sorryAx`. Then run `bin/lean-sandbox stop`:
    the pool `lean` has few places, and the workstation and its agents need them.
-3. **Branch.** `git switch -c delegate/<problem>-<yyyymmdd-hhmm>`, commit the skeleton, and
-   `git push -u origin HEAD`. The agents start from this branch.
+3. **Branch.** Unless you are on a `formalize/` branch already, `git switch -c
+   delegate/<problem>-<yyyymmdd-hhmm>`. Commit the skeleton, and `git push -u origin HEAD`. The
+   agents start from this branch.
 4. **Workstation.** Call `list_workstation_types` and check that `lean` is available. Call
    `create_workstation` with `workstation_type: "lean"`, `lifetime_s: 3600` and a label.
    Wait with `get_workstation` until its state is `ready`.
