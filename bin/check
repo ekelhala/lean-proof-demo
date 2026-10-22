@@ -60,7 +60,7 @@ def run_lean(text: str, names: list[str], label: str) -> dict[str, Any]:
     path.write_text(body + "\n".join(added) + "\n", encoding="utf-8")
     try:
         proc = subprocess.run([lake(), "env", "lean", "--json", str(path)], cwd=ROOT,
-                              capture_output=True, text=True, timeout=TIMEOUT_S)
+                              capture_output=True, text=True, timeout=TIMEOUT_S, check=False)
     except subprocess.TimeoutExpired:
         raise CallError(f"{label}: Lean ran out of {TIMEOUT_S} s") from None
     messages, extra = [], []
@@ -82,7 +82,7 @@ def run_lean(text: str, names: list[str], label: str) -> dict[str, Any]:
             axioms[found[1]] = set()
         else:
             for n in names:
-                if data.startswith(n + " :") or data.startswith("@" + n + " :"):
+                if data.startswith((n + " :", "@" + n + " :")):
                     types[n] = " ".join(data.split(":", 1)[1].split())
     return {"messages": messages, "extra": extra, "axioms": axioms, "types": types}
 
