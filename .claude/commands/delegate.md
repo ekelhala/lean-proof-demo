@@ -35,7 +35,8 @@ each step, in one or two sentences, because this is a live demo.
 6. **Wait.** Call `read_inbox` with `wait_s: 50` in a loop, and pass each `next_cursor` on.
    Tell the user each `progress`, `question` and `result` item in one line. Answer a `question`
    with `send_message`. When an agent ends, call `get_agent` for its branch.
-7. **Check their work.** For each agent that succeeded:
+7. **Check their work.** For each agent whose `repository.delivery_state` is `pushed`, also when
+   its state is `failed`, because `verify` decides:
    `git fetch origin ws/<agent-id>` and `git checkout FETCH_HEAD -- Lemmas/<Problem>/<LemmaName>.lean`.
    Then run `bin/lean-sandbox verify` on all the lemma files in one call. If it answers `HTTP 429`
    or `pool_offline`, wait until every agent has ended, destroy the workstation, and try again. An agent's own
